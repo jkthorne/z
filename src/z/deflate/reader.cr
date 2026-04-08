@@ -12,6 +12,11 @@ module Z
         @inflater = Inflater.new(@io)
       end
 
+      # Read a byte from the post-deflate stream (drains buffered bytes first)
+      def read_trailer_byte : UInt8?
+        @inflater.bit_reader.read_trailer_byte
+      end
+
       def self.open(io : IO, sync_close : Bool = false, & : Reader ->)
         reader = new(io, sync_close: sync_close)
         begin

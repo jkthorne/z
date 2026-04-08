@@ -130,9 +130,10 @@ module Z
       end
 
       private def try_read_next_header : Bool
-        id1 = @io.read_byte
+        reader = @deflate_reader.not_nil!
+        id1 = reader.read_trailer_byte
         return false if id1.nil?
-        id2 = @io.read_byte
+        id2 = reader.read_trailer_byte
         return false if id2.nil?
 
         if id1 == MAGIC1 && id2 == MAGIC2
@@ -186,8 +187,8 @@ module Z
       end
 
       private def verify_trailer : Nil
-        expected_crc = read_u32_le
-        expected_isize = read_u32_le
+        expected_crc = read_u32_le_from_deflate
+        expected_isize = read_u32_le_from_deflate
 
         actual_crc = CRC32.finalize(@crc32)
         unless actual_crc == expected_crc
@@ -243,6 +244,16 @@ module Z
         b2 = @io.read_byte || raise Gzip::Error.new("Unexpected end of input")
         b3 = @io.read_byte || raise Gzip::Error.new("Unexpected end of input")
         b4 = @io.read_byte || raise Gzip::Error.new("Unexpected end of input")
+        b1.to_u32 | (b2.to_u32 << 8) | (b3.to_u32 << 16) | (b4.to_u32 << 24)
+      end
+
+      # Read u32 from the deflate reader's buffered stream (for trailer reading)
+      private def read_u32_le_from_deflate : UInt32
+        reader = @deflate_reader.not_nil!
+        b1 = reader.read_trailer_byte || raise Gzip::Error.new("Unexpected end of input")
+        b2 = reader.read_trailer_byte || raise Gzip::Error.new("Unexpected end of input")
+        b3 = reader.read_trailer_byte || raise Gzip::Error.new("Unexpected end of input")
+        b4 = reader.read_trailer_byte || raise Gzip::Error.new("Unexpected end of input")
         b1.to_u32 | (b2.to_u32 << 8) | (b3.to_u32 << 16) | (b4.to_u32 << 24)
       end
 

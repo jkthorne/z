@@ -9,12 +9,21 @@ module Z
         Finished
       end
 
+      # Buffer size: 32KB window + 32KB output space
+      BUFFER_SIZE = WINDOW_SIZE * 2
+
       @reader : BitReader
       @state : State = State::BlockHeader
       @final_block : Bool = false
-      @window : Bytes = Bytes.new(WINDOW_SIZE)
-      @window_pos : Int32 = 0
-      @window_used : Int32 = 0
+
+      # Unified buffer serves as both sliding window and output accumulator.
+      # Data is decoded into @buf starting at @buf_pos. The last WINDOW_SIZE
+      # bytes before @buf_pos form the sliding window for back-references.
+      # When @buf_pos reaches BUFFER_SIZE, we slide the window down.
+      @buf : Bytes = Bytes.new(BUFFER_SIZE)
+      @buf_pos : Int32 = 0         # Next write position
+      @buf_read_pos : Int32 = 0    # Next position to flush to caller
+      @total_out : Int64 = 0_i64   # Total bytes output (for distance validation)
 
       # Current block trees
       @literal_tree : Huffman::Tree?
@@ -31,15 +40,37 @@ module Z
         @reader = BitReader.new(io)
       end
 
+      # Expose the bit reader for trailer reading by format wrappers
+      def bit_reader : BitReader
+        @reader
+      end
+
       def read(output : Bytes) : Int32
-        return 0 if @state == State::Finished && @copy_length == 0
+        return 0 if @state == State::Finished && @copy_length == 0 && @buf_read_pos >= @buf_pos
         written = 0
 
         while written < output.size
-          # Handle pending back-reference copy
+          # First, flush any buffered decoded data to the caller
+          buffered = @buf_pos - @buf_read_pos
+          if buffered > 0
+            chunk = {buffered, output.size - written}.min
+            output[written, chunk].copy_from(@buf[@buf_read_pos, chunk])
+            @buf_read_pos += chunk
+            written += chunk
+            # Slide window when all buffered data has been consumed
+            if @buf_read_pos == @buf_pos
+              ensure_buf_space
+            end
+            next if written >= output.size
+          end
+
+          # Make sure there's space to decode into
+          ensure_buf_space if @buf_pos >= BUFFER_SIZE
+
+          # Decode more data into our internal buffer
           if @copy_length > 0
-            written += emit_copy(output, written)
-            next if @copy_length > 0
+            emit_copy
+            next
           end
 
           case @state
@@ -48,9 +79,9 @@ module Z
           when .stored_block_init?
             init_stored_block
           when .stored_block_copy?
-            written += copy_stored(output, written)
+            copy_stored
           when .decode_symbols?
-            written += decode_symbols(output, written)
+            decode_symbols
           when .finished?
             break
           end
@@ -89,47 +120,40 @@ module Z
         @state = State::StoredBlockCopy
       end
 
-      private def copy_stored(output : Bytes, offset : Int32) : Int32
+      private def copy_stored : Nil
         if @stored_remaining == 0
           @state = @final_block ? State::Finished : State::BlockHeader
-          return 0
+          return
         end
 
-        can_write = {output.size - offset, @stored_remaining}.min
-        return 0 if can_write == 0
+        ensure_buf_space
+        can_write = {BUFFER_SIZE - @buf_pos, @stored_remaining}.min
+        return if can_write == 0
 
-        buf = output[offset, can_write]
+        buf = @buf[@buf_pos, can_write]
         @reader.read_bytes(buf)
-        buf.each do |byte|
-          @window[@window_pos] = byte
-          @window_pos = (@window_pos + 1) & WINDOW_MASK
-          @window_used = {@window_used + 1, WINDOW_SIZE}.min
-        end
+        @buf_pos += can_write
+        @total_out += can_write
         @stored_remaining -= can_write
 
         if @stored_remaining == 0
           @state = @final_block ? State::Finished : State::BlockHeader
         end
-
-        can_write
       end
 
-      private def decode_symbols(output : Bytes, offset : Int32) : Int32
+      private def decode_symbols : Nil
         literal_tree = @literal_tree.not_nil!
         distance_tree = @distance_tree.not_nil!
-        written = 0
+        buf_ptr = @buf.to_unsafe
 
-        while offset + written < output.size
+        while @buf_pos < BUFFER_SIZE
           symbol = literal_tree.decode(@reader)
 
           if symbol < 256
-            # Literal byte
-            byte = symbol.to_u8
-            output[offset + written] = byte
-            @window[@window_pos] = byte
-            @window_pos = (@window_pos + 1) & WINDOW_MASK
-            @window_used = {@window_used + 1, WINDOW_SIZE}.min
-            written += 1
+            # Literal byte — write directly to buffer
+            buf_ptr[@buf_pos] = symbol.to_u8
+            @buf_pos += 1
+            @total_out += 1
           elsif symbol == END_OF_BLOCK
             @state = @final_block ? State::Finished : State::BlockHeader
             break
@@ -139,58 +163,83 @@ module Z
             dist_code = distance_tree.decode(@reader)
             distance = decode_distance(dist_code)
 
-            if distance > @window_used
-              raise Deflate::Error.new("Invalid back-reference distance #{distance} exceeds window #{@window_used}")
+            if distance > @total_out
+              raise Deflate::Error.new("Invalid back-reference distance #{distance} exceeds output #{@total_out}")
             end
 
             @copy_length = length
             @copy_distance = distance
-            written += emit_copy(output, offset + written)
-            break if @copy_length > 0  # Partial copy, need more output space
+            emit_copy
+            break if @buf_pos >= BUFFER_SIZE
           end
         end
-
-        written
       end
 
-      private def emit_copy(output : Bytes, offset : Int32) : Int32
-        written = 0
-        while @copy_length > 0 && offset + written < output.size
-          avail = {output.size - (offset + written), @copy_length}.min
-          src_pos = (@window_pos - @copy_distance) & WINDOW_MASK
+      private def emit_copy : Nil
+        buf_ptr = @buf.to_unsafe
+
+        while @copy_length > 0 && @buf_pos < BUFFER_SIZE
+          src_pos = @buf_pos - @copy_distance
+          avail = {BUFFER_SIZE - @buf_pos, @copy_length}.min
 
           if @copy_distance >= @copy_length
-            # Non-overlapping: bulk copy from window
-            # Handle window wrap-around
-            chunk = {avail, WINDOW_SIZE - src_pos}.min
-            output[offset + written, chunk].copy_from(@window[src_pos, chunk])
-
-            # Update window with copied bytes
-            if @window_pos + chunk <= WINDOW_SIZE
-              @window[@window_pos, chunk].copy_from(output[offset + written, chunk])
-              @window_pos = (@window_pos + chunk) & WINDOW_MASK
-            else
-              # Window write wraps around
-              first = WINDOW_SIZE - @window_pos
-              @window[@window_pos, first].copy_from(output[offset + written, first])
-              @window[0, chunk - first].copy_from(output[offset + written + first, chunk - first])
-              @window_pos = chunk - first
+            # Non-overlapping: bulk copy
+            @buf[@buf_pos, avail].copy_from(@buf[src_pos, avail])
+            @buf_pos += avail
+            @total_out += avail
+            @copy_length -= avail
+          elsif @copy_distance == 1
+            # RLE: single byte repeated — fill with memset
+            byte = buf_ptr[src_pos]
+            @buf[@buf_pos, avail].fill(byte)
+            @buf_pos += avail
+            @total_out += avail
+            @copy_length -= avail
+          elsif @copy_distance < 8
+            # Small overlapping: expand pattern then bulk copy
+            # First, expand the pattern to at least 8 bytes
+            pattern_start = @buf_pos
+            dist = @copy_distance
+            # Copy initial pattern bytes
+            count = {dist, avail}.min
+            count.times do |i|
+              buf_ptr[@buf_pos + i] = buf_ptr[src_pos + i]
             end
-            @window_used = {@window_used + chunk, WINDOW_SIZE}.min
-            @copy_length -= chunk
-            written += chunk
+            # Double the pattern until we have enough
+            copied = count
+            while copied < avail
+              chunk = {copied, avail - copied}.min
+              @buf[@buf_pos + copied, chunk].copy_from(@buf[pattern_start, chunk])
+              copied += chunk
+            end
+            @buf_pos += avail
+            @total_out += avail
+            @copy_length -= avail
           else
-            # Overlapping: byte-at-a-time (required for repeating patterns)
-            byte = @window[src_pos]
-            output[offset + written] = byte
-            @window[@window_pos] = byte
-            @window_pos = (@window_pos + 1) & WINDOW_MASK
-            @window_used = {@window_used + 1, WINDOW_SIZE}.min
-            @copy_length -= 1
-            written += 1
+            # Overlapping with large distance: copy in distance-sized chunks
+            while @copy_length > 0 && @buf_pos < BUFFER_SIZE
+              chunk = {@copy_distance, @copy_length, BUFFER_SIZE - @buf_pos}.min
+              src = @buf_pos - @copy_distance
+              @buf[@buf_pos, chunk].copy_from(@buf[src, chunk])
+              @buf_pos += chunk
+              @total_out += chunk
+              @copy_length -= chunk
+            end
           end
         end
-        written
+      end
+
+      # Ensure there's space in the buffer. If full, slide the window down.
+      private def ensure_buf_space : Nil
+        return if @buf_pos < BUFFER_SIZE
+
+        # Keep the last WINDOW_SIZE bytes as the sliding window
+        keep = {WINDOW_SIZE, @buf_pos}.min
+        if keep > 0
+          @buf.copy_from(@buf[(@buf_pos - keep), keep])
+        end
+        @buf_read_pos = {0, @buf_read_pos - (@buf_pos - keep)}.max
+        @buf_pos = keep
       end
 
       private def decode_length(symbol : UInt16) : Int32

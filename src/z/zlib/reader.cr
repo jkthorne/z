@@ -84,11 +84,11 @@ module Z
         return if @checksum_verified
         @checksum_verified = true
 
-        # Read Adler-32 checksum (big-endian)
-        b1 = @io.read_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
-        b2 = @io.read_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
-        b3 = @io.read_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
-        b4 = @io.read_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
+        # Read Adler-32 checksum (big-endian) from deflate reader's buffered stream
+        b1 = @deflate_reader.read_trailer_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
+        b2 = @deflate_reader.read_trailer_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
+        b3 = @deflate_reader.read_trailer_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
+        b4 = @deflate_reader.read_trailer_byte || raise Zlib::Error.new("Truncated zlib stream: missing Adler-32 checksum")
 
         expected = (b1.to_u32 << 24) | (b2.to_u32 << 16) | (b3.to_u32 << 8) | b4.to_u32
         unless @adler32 == expected
