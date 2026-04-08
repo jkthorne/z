@@ -32,18 +32,23 @@ module Z
           return
         end
 
-        # Compute frequency tables
+        # Compute frequency tables and extra bits in a single pass
         lit_freq = Array(Int32).new(286, 0)
         dist_freq = Array(Int32).new(30, 0)
+        extra_bits_total = 0
+        has_matches = false
 
         @tokens.each do |token|
           if token.literal?
             lit_freq[token.literal.not_nil!.to_i32] += 1
           else
+            has_matches = true
             lit_code = length_to_code(token.length)
             lit_freq[lit_code] += 1
             dist_code = distance_to_code(token.distance)
             dist_freq[dist_code] += 1
+            extra_bits_total += Huffman::LENGTH_EXTRA[lit_code - 257]
+            extra_bits_total += Huffman::DISTANCE_EXTRA[dist_code]
           end
         end
         lit_freq[END_OF_BLOCK.to_i32] += 1  # End of block
@@ -53,12 +58,9 @@ module Z
         dist_encoder = Huffman::Encoder.new(dist_freq, max_bits: 15)
 
         # Decide between fixed and dynamic Huffman
-        # For simplicity, compute the encoded size for both and pick the smaller
-        dynamic_size = estimate_dynamic_size(lit_encoder, dist_encoder, lit_freq, dist_freq)
-        fixed_size = estimate_fixed_size(lit_freq, dist_freq)
+        dynamic_size = estimate_dynamic_size(lit_encoder, dist_encoder, lit_freq, dist_freq, extra_bits_total)
+        fixed_size = estimate_fixed_size(lit_freq, dist_freq, extra_bits_total)
         stored_size = estimate_stored_size
-
-        has_matches = @tokens.any? { |t| !t.literal? }
         if @level == NO_COMPRESSION || (!has_matches && stored_size <= dynamic_size && stored_size <= fixed_size)
           write_stored_block(final)
         elsif fixed_size <= dynamic_size
@@ -326,7 +328,7 @@ module Z
         result
       end
 
-      private def estimate_dynamic_size(lit_enc : Huffman::Encoder, dist_enc : Huffman::Encoder, lit_freq : Array(Int32), dist_freq : Array(Int32)) : Int32
+      private def estimate_dynamic_size(lit_enc : Huffman::Encoder, dist_enc : Huffman::Encoder, lit_freq : Array(Int32), dist_freq : Array(Int32), extra_bits_total : Int32) : Int32
         bits = 3 + 5 + 5 + 4  # Block header + HLIT + HDIST + HCLEN
         bits += 19 * 3  # Max code length code lengths
         bits += 100  # Rough estimate for RLE-encoded code lengths
@@ -336,19 +338,10 @@ module Z
         dist_freq.each_with_index do |f, i|
           bits += f * dist_enc.lengths[i].to_i32 if f > 0 && i < dist_enc.lengths.size
         end
-        # Add extra bits for lengths/distances
-        @tokens.each do |token|
-          unless token.literal?
-            lc = length_to_code(token.length)
-            bits += Huffman::LENGTH_EXTRA[lc - 257]
-            dc = distance_to_code(token.distance)
-            bits += Huffman::DISTANCE_EXTRA[dc]
-          end
-        end
-        bits
+        bits + extra_bits_total
       end
 
-      private def estimate_fixed_size(lit_freq : Array(Int32), dist_freq : Array(Int32)) : Int32
+      private def estimate_fixed_size(lit_freq : Array(Int32), dist_freq : Array(Int32), extra_bits_total : Int32) : Int32
         bits = 3  # Block header
         lit_freq.each_with_index do |f, i|
           next if f == 0
@@ -366,15 +359,7 @@ module Z
         dist_freq.each_with_index do |f, _|
           bits += f * 5
         end
-        @tokens.each do |token|
-          unless token.literal?
-            lc = length_to_code(token.length)
-            bits += Huffman::LENGTH_EXTRA[lc - 257]
-            dc = distance_to_code(token.distance)
-            bits += Huffman::DISTANCE_EXTRA[dc]
-          end
-        end
-        bits
+        bits + extra_bits_total
       end
 
       private def estimate_stored_size : Int32
