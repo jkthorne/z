@@ -17,13 +17,7 @@ module Z
     end
 
     def write_bits_reversed(value : UInt32, n : Int32) : Nil
-      reversed = 0_u32
-      v = value
-      n.times do
-        reversed = (reversed << 1) | (v & 1)
-        v >>= 1
-      end
-      write_bits(reversed, n)
+      write_bits(Huffman.reverse_bits(value, n), n)
     end
 
     def align_to_byte : Nil

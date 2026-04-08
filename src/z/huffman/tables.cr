@@ -54,6 +54,29 @@ module Z
       16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
     ]
 
+    # Byte-reversal lookup table for fast bit reversal
+    REVERSE_BYTE = begin
+      table = StaticArray(UInt8, 256).new(0_u8)
+      256.times do |i|
+        r = 0_u8
+        v = i.to_u8
+        8.times do
+          r = (r << 1) | (v & 1)
+          v >>= 1
+        end
+        table[i] = r
+      end
+      table
+    end
+
+    # Reverse n bits (n <= 16) using byte-reversal table
+    def self.reverse_bits(value : UInt32, n : Int32) : UInt32
+      # Reverse 16 bits via two byte lookups, then shift right by (16 - n)
+      lo = REVERSE_BYTE[value & 0xFF].to_u32
+      hi = REVERSE_BYTE[(value >> 8) & 0xFF].to_u32
+      ((lo << 8) | hi) >> (16 - n)
+    end
+
     # Fixed literal/length code lengths (RFC 1951 section 3.2.6)
     FIXED_LITERAL_LENGTHS = begin
       lengths = StaticArray(UInt8, 288).new(0_u8)

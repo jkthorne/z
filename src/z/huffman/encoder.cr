@@ -193,14 +193,7 @@ module Z
           if len > 0
             canonical = next_code[len]
             next_code[len] += 1
-            # Reverse bits for LSB-first writing
-            reversed = 0_u16
-            c = canonical
-            len.times do
-              reversed = ((reversed << 1) | (c & 1)).to_u16
-              c >>= 1
-            end
-            @codes[i] = reversed
+            @codes[i] = Huffman.reverse_bits(canonical, len.to_i32).to_u16
           end
         end
       end

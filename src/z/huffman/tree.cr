@@ -192,13 +192,7 @@ module Z
       end
 
       private def reverse_bits(code : UInt32, length : Int32) : UInt32
-        result = 0_u32
-        c = code
-        length.times do
-          result = (result << 1) | (c & 1)
-          c >>= 1
-        end
-        result
+        Huffman.reverse_bits(code, length)
       end
     end
   end
