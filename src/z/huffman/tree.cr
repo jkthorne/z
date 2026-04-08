@@ -117,68 +117,54 @@ module Z
       end
 
       private def calculate_secondary_space(codes : Array(UInt32), lengths : Array(UInt8), max_symbol : Int32, max_len : Int32) : Int32
-        # Group codes by their PRIMARY_BITS prefix
-        prefixes = Hash(UInt32, Int32).new(0)
+        # Use fixed-size array indexed by primary prefix instead of Hash
+        prefix_max_extra = Array(Int32).new(PRIMARY_SIZE, 0)
         max_symbol.times do |i|
           len = lengths[i].to_i
           next if len <= PRIMARY_BITS || len == 0
           prefix = reverse_bits(codes[i], len) & (PRIMARY_SIZE - 1)
           extra = len - PRIMARY_BITS
-          size = 1 << extra
-          current = prefixes[prefix]?
-          prefixes[prefix] = {current || 0, size}.max
-        end
-
-        # For each unique prefix, we need a secondary table of size 2^(max_extra_for_prefix)
-        # But we need to find the max extra bits for each prefix group
-        prefix_max_extra = Hash(UInt32, Int32).new(0)
-        max_symbol.times do |i|
-          len = lengths[i].to_i
-          next if len <= PRIMARY_BITS || len == 0
-          prefix = reverse_bits(codes[i], len) & (PRIMARY_SIZE - 1)
-          extra = len - PRIMARY_BITS
-          current = prefix_max_extra[prefix]? || 0
-          prefix_max_extra[prefix] = extra if extra > current
+          prefix_max_extra[prefix] = extra if extra > prefix_max_extra[prefix]
         end
 
         total = 0
-        prefix_max_extra.each_value { |extra| total += (1 << extra) }
+        PRIMARY_SIZE.times do |p|
+          total += (1 << prefix_max_extra[p]) if prefix_max_extra[p] > 0
+        end
         total
       end
 
       private def fill_secondary_tables(table : Array(UInt32), codes : Array(UInt32), lengths : Array(UInt8), max_symbol : Int32, max_len : Int32) : Nil
-        # Find unique prefixes and their max extra bits
-        prefix_max_extra = Hash(UInt32, Int32).new(0)
+        # Pass 1: find max extra bits per primary prefix
+        prefix_max_extra = Array(Int32).new(PRIMARY_SIZE, 0)
         max_symbol.times do |i|
           len = lengths[i].to_i
           next if len <= PRIMARY_BITS || len == 0
           prefix = reverse_bits(codes[i], len) & (PRIMARY_SIZE - 1)
           extra = len - PRIMARY_BITS
-          current = prefix_max_extra[prefix]? || 0
-          prefix_max_extra[prefix] = extra if extra > current
+          prefix_max_extra[prefix] = extra if extra > prefix_max_extra[prefix]
         end
 
-        # Allocate secondary tables
+        # Pass 2: assign offsets and set redirect entries
+        prefix_offsets = Array(Int32).new(PRIMARY_SIZE, 0)
         secondary_offset = 0
-        prefix_offsets = Hash(UInt32, {Int32, Int32}).new  # prefix -> {offset, max_extra}
-
-        prefix_max_extra.each do |prefix, max_extra|
-          prefix_offsets[prefix] = {secondary_offset, max_extra}
-          # Set redirect entry in primary table
-          table[prefix] = REDIRECT_FLAG | (max_extra.to_u32 << 16) | secondary_offset.to_u32
+        PRIMARY_SIZE.times do |p|
+          max_extra = prefix_max_extra[p]
+          next if max_extra == 0
+          prefix_offsets[p] = secondary_offset
+          table[p] = REDIRECT_FLAG | (max_extra.to_u32 << 16) | secondary_offset.to_u32
           secondary_offset += (1 << max_extra)
         end
 
-        # Fill secondary table entries
+        # Pass 3: fill secondary table entries
         max_symbol.times do |i|
           len = lengths[i].to_i
           next if len <= PRIMARY_BITS || len == 0
 
           reversed = reverse_bits(codes[i], len)
           prefix = reversed & (PRIMARY_SIZE - 1)
-          offset_info = prefix_offsets[prefix]
-          offset = offset_info[0]
-          max_extra = offset_info[1]
+          offset = prefix_offsets[prefix]
+          max_extra = prefix_max_extra[prefix]
 
           secondary_bits = reversed >> PRIMARY_BITS
           extra = len - PRIMARY_BITS
