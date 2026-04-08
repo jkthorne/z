@@ -83,6 +83,10 @@ module Z
 
         flg = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
 
+        if flg & 0xE0 != 0
+          raise Gzip::Error.new("Reserved FLG bits are set")
+        end
+
         # Read MTIME (4 bytes, little-endian)
         mtime = read_u32_le
         if mtime != 0
@@ -132,6 +136,9 @@ module Z
           return false unless cm == CM_DEFLATE
 
           flg = @io.read_byte || return false
+          if flg & 0xE0 != 0
+            raise Gzip::Error.new("Reserved FLG bits are set")
+          end
           mtime = read_u32_le
           if mtime != 0
             @header.modification_time = Time.unix(mtime.to_i64)

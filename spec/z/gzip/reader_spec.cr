@@ -65,6 +65,23 @@ describe Z::Gzip::Reader do
     end
   end
 
+  it "raises on reserved FLG bits set" do
+    # Build a minimal gzip header with reserved bit 5 set
+    io = IO::Memory.new
+    io.write_byte(0x1F_u8) # ID1
+    io.write_byte(0x8B_u8) # ID2
+    io.write_byte(0x08_u8) # CM
+    io.write_byte(0x20_u8) # FLG with reserved bit 5 set
+    4.times { io.write_byte(0_u8) } # MTIME
+    io.write_byte(0_u8) # XFL
+    io.write_byte(0xFF_u8) # OS
+    io.rewind
+
+    expect_raises(Z::Gzip::Error, "Reserved FLG bits") do
+      Z::Gzip::Reader.new(io)
+    end
+  end
+
   it "decompresses random data" do
     random = Random.new(123)
     original = Bytes.new(3000) { random.rand(256).to_u8 }
