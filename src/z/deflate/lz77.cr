@@ -169,8 +169,25 @@ module Z
       end
 
       private def match_length(s1 : Int32, s2 : Int32, max_len : Int32) : Int32
+        return 0 if max_len == 0
+        p1 = @window.to_unsafe + s1
+        p2 = @window.to_unsafe + s2
         len = 0
-        while len < max_len && @window[s1 + len] == @window[s2 + len]
+
+        # Compare 8 bytes at a time
+        while len + 8 <= max_len
+          v1 = (p1 + len).as(Pointer(UInt64)).value
+          v2 = (p2 + len).as(Pointer(UInt64)).value
+          xor = v1 ^ v2
+          if xor != 0
+            len += xor.trailing_zeros_count // 8
+            return len > max_len ? max_len : len
+          end
+          len += 8
+        end
+
+        # Compare remaining bytes
+        while len < max_len && p1[len] == p2[len]
           len += 1
         end
         len
