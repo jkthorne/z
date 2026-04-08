@@ -45,6 +45,24 @@ describe Z::Zlib::Reader do
     result.should eq(original)
   end
 
+  it "raises on truncated Adler-32 trailer" do
+    # Compress valid data, then truncate the trailer
+    original = "truncation test"
+    compressed = IO::Memory.new
+    Z::Zlib::Writer.open(compressed) { |w| w.print original }
+    compressed.rewind
+
+    # Remove the last 4 bytes (Adler-32 trailer)
+    all_bytes = compressed.to_slice
+    truncated = IO::Memory.new
+    truncated.write(all_bytes[0, all_bytes.size - 4])
+    truncated.rewind
+
+    expect_raises(Z::Zlib::Error, "Truncated zlib stream") do
+      Z::Zlib::Reader.open(truncated) { |r| r.gets_to_end }
+    end
+  end
+
   it "raises on invalid header" do
     io = IO::Memory.new(Bytes[0x00, 0x00])
     expect_raises(Z::Zlib::Error) do
