@@ -176,12 +176,13 @@ Output is also compatible with command-line tools like `gzip`, `gunzip`, and `zl
 
 ## How it works
 
-The implementation follows the RFC specifications directly:
+The implementation is fully compliant with the RFC specifications:
 
 - **LZ77** sliding window (32 KB) with hash-chain match finding and lazy matching at levels >= 4
 - **Huffman coding** with two-level lookup tables for decoding (9-bit primary + secondary) and canonical code generation for encoding
 - **Block selection** automatically chooses between stored, fixed Huffman, and dynamic Huffman blocks based on estimated encoded size
 - **Checksums** are pure Crystal: Adler-32 with the Nmax=5552 deferred-modulo optimization, CRC-32 with a precomputed 256-entry table
+- **RFC compliance** includes reserved-bit validation, header CRC16 (FHCRC) verification, trailer checksum enforcement, and correct XFL compression hints
 
 ## Development
 
