@@ -78,6 +78,30 @@ describe Z::Gzip::Writer do
     result.to_slice.should eq(original)
   end
 
+  it "sets XFL=2 for best compression" do
+    compressed = IO::Memory.new
+    Z::Gzip::Writer.open(compressed, level: 9) { |w| w.print "test" }
+    compressed.rewind
+    bytes = compressed.to_slice
+    bytes[8].should eq(2_u8) # XFL at offset 8
+  end
+
+  it "sets XFL=4 for fastest compression" do
+    compressed = IO::Memory.new
+    Z::Gzip::Writer.open(compressed, level: 1) { |w| w.print "test" }
+    compressed.rewind
+    bytes = compressed.to_slice
+    bytes[8].should eq(4_u8) # XFL at offset 8
+  end
+
+  it "sets XFL=0 for default compression" do
+    compressed = IO::Memory.new
+    Z::Gzip::Writer.open(compressed, level: 6) { |w| w.print "test" }
+    compressed.rewind
+    bytes = compressed.to_slice
+    bytes[8].should eq(0_u8) # XFL at offset 8
+  end
+
   it "preserves header metadata" do
     header = Z::Gzip::Header.new
     header.name = "test.txt"

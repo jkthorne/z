@@ -10,9 +10,11 @@ module Z
       @crc32 : UInt32 = CRC32.initial
       @isize : UInt32 = 0_u32
 
-      def initialize(@output : IO, level : Int32 = Deflate::DEFAULT_COMPRESSION, @header : Header = Header.new, @sync_close : Bool = false)
+      @level : Int32
+
+      def initialize(@output : IO, @level : Int32 = Deflate::DEFAULT_COMPRESSION, @header : Header = Header.new, @sync_close : Bool = false)
         write_header
-        @deflate_writer = Deflate::Writer.new(@output, level: level)
+        @deflate_writer = Deflate::Writer.new(@output, level: @level)
       end
 
       def self.open(io : IO, level : Int32 = Deflate::DEFAULT_COMPRESSION, sync_close : Bool = false, & : Writer ->)
@@ -64,8 +66,13 @@ module Z
         mtime = @header.modification_time.to_unix.to_u32
         write_u32_le(mtime)
 
-        # XFL
-        @output.write_byte(0_u8)
+        # XFL: 2 = max compression, 4 = fastest (RFC 1952)
+        xfl = case @level
+              when 9 then 2_u8
+              when 1 then 4_u8
+              else        0_u8
+              end
+        @output.write_byte(xfl)
         # OS
         @output.write_byte(@header.os)
 
