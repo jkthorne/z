@@ -36,6 +36,19 @@ module Z
       11, 11, 12, 12, 13, 13,
     ]
 
+    # Reverse lookup: length (3..258) -> length code (257..285)
+    # Index by (length - 3)
+    LENGTH_TO_CODE = begin
+      table = StaticArray(UInt16, 259).new(0_u16)
+      LENGTH_BASE.each_with_index do |base, i|
+        next_base = i + 1 < LENGTH_BASE.size ? LENGTH_BASE[i + 1] : 259
+        (base...next_base).each do |len|
+          table[len - 3] = (i + 257).to_u16 if len - 3 < 259
+        end
+      end
+      table
+    end
+
     # Code length alphabet order (RFC 1951 section 3.2.7)
     CODE_LENGTH_ORDER = StaticArray[
       16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,

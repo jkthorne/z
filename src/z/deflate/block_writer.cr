@@ -385,24 +385,23 @@ module Z
       end
 
       private def length_to_code(length : Int32) : Int32
-        Huffman::LENGTH_BASE.each_with_index do |base, i|
-          next_base = i + 1 < Huffman::LENGTH_BASE.size ? Huffman::LENGTH_BASE[i + 1] : base + 1
-          if length >= base && length < next_base
-            return i + 257
-          end
-        end
-        # Length 258 maps to code 285
-        285
+        Huffman::LENGTH_TO_CODE[length - 3].to_i32
       end
 
       private def distance_to_code(distance : Int32) : Int32
-        Huffman::DISTANCE_BASE.each_with_index do |base, i|
-          next_base = i + 1 < Huffman::DISTANCE_BASE.size ? Huffman::DISTANCE_BASE[i + 1] : base + 1
-          if distance >= base && distance < next_base
-            return i
-          end
+        # Distances 1-4 map directly to codes 0-3
+        return distance - 1 if distance <= 4
+
+        # For distance >= 5, use log2-based formula:
+        # n = floor(log2(distance - 1)), code = 2*n + high_bit
+        d = distance - 1
+        n = 0
+        v = d >> 1
+        while v > 0
+          n += 1
+          v >>= 1
         end
-        29
+        2 * n + ((d >> (n - 1)) & 1)
       end
     end
   end
