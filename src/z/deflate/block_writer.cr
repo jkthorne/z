@@ -6,9 +6,13 @@ module Z
       @tokens : Array(Token)
       @writer : BitWriter
       @level : Int32
+      @lit_freq : Array(Int32)
+      @dist_freq : Array(Int32)
 
       def initialize(@writer : BitWriter, @level : Int32 = DEFAULT_COMPRESSION)
         @tokens = Array(Token).new(MAX_BLOCK_TOKENS)
+        @lit_freq = Array(Int32).new(286, 0)
+        @dist_freq = Array(Int32).new(30, 0)
       end
 
       def add_token(token : Token, & : ->) : Nil
@@ -32,9 +36,11 @@ module Z
           return
         end
 
-        # Compute frequency tables and extra bits in a single pass
-        lit_freq = Array(Int32).new(286, 0)
-        dist_freq = Array(Int32).new(30, 0)
+        # Compute frequency tables and extra bits in a single pass (reuse arrays)
+        lit_freq = @lit_freq
+        dist_freq = @dist_freq
+        lit_freq.fill(0)
+        dist_freq.fill(0)
         extra_bits_total = 0
         has_matches = false
 
@@ -373,20 +379,42 @@ module Z
         Huffman::LENGTH_TO_CODE[length - 3].to_i32
       end
 
-      private def distance_to_code(distance : Int32) : Int32
-        # Distances 1-4 map directly to codes 0-3
-        return distance - 1 if distance <= 4
-
-        # For distance >= 5, use log2-based formula:
-        # n = floor(log2(distance - 1)), code = 2*n + high_bit
-        d = distance - 1
-        n = 0
-        v = d >> 1
-        while v > 0
-          n += 1
-          v >>= 1
+      # Lookup table for distance -> distance code (distances 1-512 direct, >512 uses shift)
+      DIST_CODE_SMALL = begin
+        table = StaticArray(UInt8, 512).new(0_u8)
+        512.times do |i|
+          dist = i + 1
+          if dist <= 4
+            table[i] = (dist - 1).to_u8
+          else
+            d = dist - 1
+            n = 0
+            v = d >> 1
+            while v > 0
+              n += 1
+              v >>= 1
+            end
+            table[i] = (2 * n + ((d >> (n - 1)) & 1)).to_u8
+          end
         end
-        2 * n + ((d >> (n - 1)) & 1)
+        table
+      end
+
+      @[AlwaysInline]
+      private def distance_to_code(distance : Int32) : Int32
+        if distance <= 512
+          DIST_CODE_SMALL[distance - 1].to_i32
+        else
+          # For large distances, shift down and use the table for the high bits
+          d = distance - 1
+          n = 0
+          v = d >> 1
+          while v > 0
+            n += 1
+            v >>= 1
+          end
+          2 * n + ((d >> (n - 1)) & 1)
+        end
       end
     end
   end
