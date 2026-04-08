@@ -156,14 +156,39 @@ module Z
       private def emit_copy(output : Bytes, offset : Int32) : Int32
         written = 0
         while @copy_length > 0 && offset + written < output.size
+          avail = {output.size - (offset + written), @copy_length}.min
           src_pos = (@window_pos - @copy_distance) & WINDOW_MASK
-          byte = @window[src_pos]
-          output[offset + written] = byte
-          @window[@window_pos] = byte
-          @window_pos = (@window_pos + 1) & WINDOW_MASK
-          @window_used = {@window_used + 1, WINDOW_SIZE}.min
-          @copy_length -= 1
-          written += 1
+
+          if @copy_distance >= @copy_length
+            # Non-overlapping: bulk copy from window
+            # Handle window wrap-around
+            chunk = {avail, WINDOW_SIZE - src_pos}.min
+            output[offset + written, chunk].copy_from(@window[src_pos, chunk])
+
+            # Update window with copied bytes
+            if @window_pos + chunk <= WINDOW_SIZE
+              @window[@window_pos, chunk].copy_from(output[offset + written, chunk])
+              @window_pos = (@window_pos + chunk) & WINDOW_MASK
+            else
+              # Window write wraps around
+              first = WINDOW_SIZE - @window_pos
+              @window[@window_pos, first].copy_from(output[offset + written, first])
+              @window[0, chunk - first].copy_from(output[offset + written + first, chunk - first])
+              @window_pos = chunk - first
+            end
+            @window_used = {@window_used + chunk, WINDOW_SIZE}.min
+            @copy_length -= chunk
+            written += chunk
+          else
+            # Overlapping: byte-at-a-time (required for repeating patterns)
+            byte = @window[src_pos]
+            output[offset + written] = byte
+            @window[@window_pos] = byte
+            @window_pos = (@window_pos + 1) & WINDOW_MASK
+            @window_used = {@window_used + 1, WINDOW_SIZE}.min
+            @copy_length -= 1
+            written += 1
+          end
         end
         written
       end
