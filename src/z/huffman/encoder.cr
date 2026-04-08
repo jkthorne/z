@@ -109,47 +109,32 @@ module Z
         max_found = lengths.max.to_i32
         return if max_found <= max_bits
 
-        # Use the Kraft inequality approach to fix overlong codes
+        # Clamp overlong codes to max_bits
+        lengths.each_with_index do |len, i|
+          lengths[i] = max_bits.to_u8 if len > max_bits
+        end
+
+        # Fix Kraft inequality violation using integer arithmetic.
+        # Kraft sum in fixed-point: each code of length L contributes 2^(max_bits - L).
+        # Valid tree requires kraft_sum <= 2^max_bits.
+        target = 1_i64 << max_bits
+
         loop do
-          max_found = 0
-          kraft_sum = 0.0
-          lengths.each do |len|
-            if len > 0
-              max_found = len.to_i32 if len > max_found
-              kraft_sum += 1.0 / (1 << len)
-            end
-          end
+          kraft_sum = 0_i64
+          lengths.each { |len| kraft_sum += (1_i64 << (max_bits - len)) if len > 0 }
+          break if kraft_sum <= target
 
-          break if max_found <= max_bits
-
-          # Shorten codes that are too long
+          # Find the symbol with shortest code length and lengthen it
+          min_len = max_bits
+          min_idx = -1
           lengths.each_with_index do |len, i|
-            if len > max_bits
-              lengths[i] = max_bits.to_u8
+            if len > 0 && len < min_len
+              min_len = len.to_i32
+              min_idx = i
             end
           end
-
-          # Now we may have violated the Kraft inequality, fix by lengthening shortest codes
-          loop do
-            kraft_sum = 0.0
-            lengths.each do |len|
-              kraft_sum += 1.0 / (1 << len) if len > 0
-            end
-
-            break if kraft_sum <= 1.0 + 1e-10
-
-            # Find the symbol with shortest code length and lengthen it
-            min_len = max_bits
-            min_idx = -1
-            lengths.each_with_index do |len, i|
-              if len > 0 && len < min_len
-                min_len = len.to_i32
-                min_idx = i
-              end
-            end
-            break if min_idx == -1
-            lengths[min_idx] = (lengths[min_idx] + 1).to_u8
-          end
+          break if min_idx == -1
+          lengths[min_idx] = (lengths[min_idx] + 1).to_u8
         end
       end
 
