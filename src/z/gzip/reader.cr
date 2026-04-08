@@ -69,55 +69,63 @@ module Z
       end
 
       private def read_header : Nil
-        id1 = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
-        id2 = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
+        # Track CRC-32 over header bytes for FHCRC verification
+        hcrc = CRC32.initial
+
+        id1 = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
+        id2 = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
 
         unless id1 == MAGIC1 && id2 == MAGIC2
           raise Gzip::Error.new("Invalid gzip magic bytes: #{id1}, #{id2}")
         end
 
-        cm = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
+        cm = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
         unless cm == CM_DEFLATE
           raise Gzip::Error.new("Unsupported compression method: #{cm}")
         end
 
-        flg = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
+        flg = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
 
         if flg & 0xE0 != 0
           raise Gzip::Error.new("Reserved FLG bits are set")
         end
 
         # Read MTIME (4 bytes, little-endian)
-        mtime = read_u32_le
+        mtime = header_read_u32_le(pointerof(hcrc))
         if mtime != 0
           @header.modification_time = Time.unix(mtime.to_i64)
         end
 
         # XFL and OS
-        _xfl = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
-        @header.os = @io.read_byte || raise Gzip::Error.new("Unexpected end of gzip header")
+        _xfl = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
+        @header.os = header_read_byte(pointerof(hcrc)) || raise Gzip::Error.new("Unexpected end of gzip header")
 
         # FEXTRA
         if flg & FEXTRA != 0
-          xlen = read_u16_le.to_i32
+          xlen = header_read_u16_le(pointerof(hcrc)).to_i32
           extra = Bytes.new(xlen)
           @io.read_fully(extra)
+          hcrc = CRC32.update(extra, hcrc)
           @header.extra = extra
         end
 
         # FNAME
         if flg & FNAME != 0
-          @header.name = read_null_terminated_string
+          @header.name = header_read_null_terminated_string(pointerof(hcrc))
         end
 
         # FCOMMENT
         if flg & FCOMMENT != 0
-          @header.comment = read_null_terminated_string
+          @header.comment = header_read_null_terminated_string(pointerof(hcrc))
         end
 
         # FHCRC
         if flg & FHCRC != 0
-          _hcrc = read_u16_le  # Skip header CRC16
+          stored_crc16 = read_u16_le
+          expected_crc16 = CRC32.finalize(hcrc) & 0xFFFF_u32
+          unless stored_crc16.to_u32 == expected_crc16
+            raise Gzip::Error.new("Header CRC16 mismatch: expected #{expected_crc16}, got #{stored_crc16}")
+          end
         end
       end
 
@@ -132,34 +140,43 @@ module Z
           @crc32 = CRC32.initial
           @isize = 0_u32
 
-          cm = @io.read_byte || return false
+          # Track header CRC from the start (including magic bytes)
+          hcrc = CRC32.initial
+          hcrc = CRC32.update(Bytes[id1, id2], hcrc)
+
+          cm = header_read_byte(pointerof(hcrc)) || return false
           return false unless cm == CM_DEFLATE
 
-          flg = @io.read_byte || return false
+          flg = header_read_byte(pointerof(hcrc)) || return false
           if flg & 0xE0 != 0
             raise Gzip::Error.new("Reserved FLG bits are set")
           end
-          mtime = read_u32_le
+          mtime = header_read_u32_le(pointerof(hcrc))
           if mtime != 0
             @header.modification_time = Time.unix(mtime.to_i64)
           end
-          _xfl = @io.read_byte || return false
-          @header.os = @io.read_byte || return false
+          _xfl = header_read_byte(pointerof(hcrc)) || return false
+          @header.os = header_read_byte(pointerof(hcrc)) || return false
 
           if flg & FEXTRA != 0
-            xlen = read_u16_le.to_i32
+            xlen = header_read_u16_le(pointerof(hcrc)).to_i32
             extra = Bytes.new(xlen)
             @io.read_fully(extra)
+            hcrc = CRC32.update(extra, hcrc)
             @header.extra = extra
           end
           if flg & FNAME != 0
-            @header.name = read_null_terminated_string
+            @header.name = header_read_null_terminated_string(pointerof(hcrc))
           end
           if flg & FCOMMENT != 0
-            @header.comment = read_null_terminated_string
+            @header.comment = header_read_null_terminated_string(pointerof(hcrc))
           end
           if flg & FHCRC != 0
-            _hcrc = read_u16_le
+            stored_crc16 = read_u16_le
+            expected_crc16 = CRC32.finalize(hcrc) & 0xFFFF_u32
+            unless stored_crc16.to_u32 == expected_crc16
+              raise Gzip::Error.new("Header CRC16 mismatch: expected #{expected_crc16}, got #{stored_crc16}")
+            end
           end
 
           true
@@ -179,6 +196,39 @@ module Z
 
         unless @isize == expected_isize
           raise Gzip::Error.new("Size mismatch: expected #{expected_isize}, got #{@isize}")
+        end
+      end
+
+      # Header reading helpers that accumulate CRC-32 for FHCRC verification
+      private def header_read_byte(hcrc : Pointer(UInt32)) : UInt8?
+        byte = @io.read_byte
+        if byte
+          hcrc.value = CRC32.update(Bytes[byte], hcrc.value)
+        end
+        byte
+      end
+
+      private def header_read_u16_le(hcrc : Pointer(UInt32)) : UInt16
+        b1 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b2 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b1.to_u16 | (b2.to_u16 << 8)
+      end
+
+      private def header_read_u32_le(hcrc : Pointer(UInt32)) : UInt32
+        b1 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b2 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b3 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b4 = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+        b1.to_u32 | (b2.to_u32 << 8) | (b3.to_u32 << 16) | (b4.to_u32 << 24)
+      end
+
+      private def header_read_null_terminated_string(hcrc : Pointer(UInt32)) : String
+        String.build do |sb|
+          loop do
+            byte = header_read_byte(hcrc) || raise Gzip::Error.new("Unexpected end of input")
+            break if byte == 0
+            sb.write_byte(byte)
+          end
         end
       end
 
