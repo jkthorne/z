@@ -174,12 +174,44 @@ Z::Gzip::Reader.open(compressed) { |gz| gz.gets_to_end }
 
 Output is also compatible with command-line tools like `gzip`, `gunzip`, and `zlib-flate`.
 
+## Performance
+
+Z is a pure Crystal implementation competing against Crystal's stdlib which wraps C libz. Benchmarks run on 1 MB of data at the default compression level (6), built with `--release`.
+
+### Compression
+
+| Format | Z (MB/s) | stdlib/libz (MB/s) | Z / stdlib | Ratio |
+|---|--:|--:|--:|---|
+| Deflate (text) | 140 | 483 | 0.3x | identical |
+| Gzip (text) | 135 | 461 | 0.3x | identical |
+| Zlib (text) | 133 | 445 | 0.3x | identical |
+| Deflate (random) | 26 | 58 | 0.4x | identical |
+| Gzip (random) | 28 | 55 | 0.5x | identical |
+| Zlib (random) | 27 | 56 | 0.5x | identical |
+
+### Decompression
+
+| Format | Z (MB/s) | stdlib/libz (MB/s) | Z / stdlib |
+|---|--:|--:|--:|
+| Deflate (text) | 2,910 | 4,749 | 0.6x |
+| Gzip (text) | 766 | 4,547 | 0.2x |
+| Zlib (text) | 633 | 3,926 | 0.2x |
+
+Compression ratios are identical to libz at every level. Throughput is lower since this is pure Crystal with no C code — the tradeoff is zero native dependencies and full portability.
+
+Run the benchmarks yourself:
+
+```bash
+crystal build --release bench/comparison_bench.cr -o bench/comparison_bench
+./bench/comparison_bench
+```
+
 ## How it works
 
 The implementation is fully compliant with the RFC specifications:
 
 - **LZ77** sliding window (32 KB) with hash-chain match finding and lazy matching at levels >= 4
-- **Huffman coding** with two-level lookup tables for decoding (9-bit primary + secondary) and canonical code generation for encoding
+- **Huffman coding** with two-level lookup tables for decoding (11-bit primary + secondary) and canonical code generation for encoding
 - **Block selection** automatically chooses between stored, fixed Huffman, and dynamic Huffman blocks based on estimated encoded size
 - **Checksums** are pure Crystal: Adler-32 with the Nmax=5552 deferred-modulo optimization, CRC-32 with a precomputed 256-entry table
 - **RFC compliance** includes reserved-bit validation, header CRC16 (FHCRC) verification, trailer checksum enforcement, and correct XFL compression hints
